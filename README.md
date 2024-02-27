@@ -4,5 +4,7 @@ This project aims to build and compare two classification models: one based on L
 
 ## Tasks
 LDA Classifier: Construct an LDA model for classification using the first two canonical variables and generate a plot with classification regions.
+
 Logistic Regression: Create a logistic regression model capable of handling multiple classes, with an applied penalty function. Tune the penalty function parameters to minimize the probability of misclassification, using both k-fold and 10-fold cross-validation.
+
 Model Comparison: Compare the probabilities of misclassification between the two models using the aforementioned cross-validation techniques.
