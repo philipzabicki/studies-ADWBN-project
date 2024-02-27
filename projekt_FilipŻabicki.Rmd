@@ -1,0 +1,331 @@
+---
+title: "Projekt na 4"
+author: "Filip Żabicki"
+date: "21.02.2021"
+output:
+  html_document:
+    theme: cerulean
+    code_download: true
+    highlight: tango
+    df_print: paged
+---
+
+## a)
+
+### Przygotowanie danych oraz bibliotek
+
+```{r wczytanie_danych, message = FALSE}
+set.seed(1337)
+library(agricolae)
+library(ggplot2)
+library(MASS)
+library(nnet)
+library(caret)
+library(glmnet)
+library(klaR)
+library(tidyverse)
+library(tidyr)
+
+data(yacon)
+yacon <- yacon[, c("locality", "wfr", "fructose", "sucrose", "dry")]
+
+summary(yacon)
+```
+Podsumowanie danych
+
+```{r}
+head(yacon)
+```
+Pierwszych kilka wierszy danych
+
+```{r}
+pairs(yacon[, -1], col = yacon$locality)
+```
+
+Wykresy rozrzutu zmiennych, kolorem zaznaczono klasy zmiennej objaśnianej. Zestawienia wfr+fructose oraz dry+wfr wydają się mieć duży potencjał do użycia w celu klasyfikacji.
+
+Nie ma brakujących danych i wyglądają one sensownie, są gotowe do użycia w modelu.
+
+### Model klasyfikacji metodą LDA
+Zbudujemy model LDA dla dwóch pierwszych zmiennych kanonicznych i stworzymy wykres z obszarami klasyfikacji.
+```{r}
+# LDA model
+lda_model <- lda(locality ~ wfr + fructose + sucrose + dry, data = yacon)
+lda_pred <- predict(lda_model)
+
+# Przekształcenie macierzy na ramkę danych
+lda_pred_df <- as.data.frame(lda_pred$x)
+
+# Dodanie kolumny ze zmienną objaśnianą do ramki danych
+lda_pred_df$locality <- yacon$locality
+
+
+ggplot(lda_pred_df, aes(x = LD1, y = LD2, color = locality)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Wykres LDA",
+       x = "Pierwsza zmienna kanoniczna (LD1)",
+       y ="Druga zmienna kanoniczna (LD2)")
+
+zk1 <- lda_pred$x[,1]
+zk2 <- lda_pred$x[,2]
+partimat(locality~zk2+zk1,
+         data=yacon)
+```
+
+### Sprawdzenie jakości modelu LDA
+
+Użyję to tego macierzy pomyłek oraz sprawdzę dokładność.
+
+``` {r test_lda, echo=TRUE}
+# Predykcja modelu LDA
+lda_pred <- predict(lda_model, yacon)
+
+# Macierz pomyłek
+confusionMatrix <- table(Observed = yacon$locality, Predicted = lda_pred$class)
+print(confusionMatrix)
+
+# Obliczenie dokładności
+accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
+print(paste("Dokładność: ", accuracy))
+```
+
+## b)
+### Model klasyfikacji oparty na regresji logistycznej z karą
+
+#### Budowa modelu z pakietu glmnet
+
+```{r }
+logit_model <- glmnet(as.matrix(yacon[, -1]),
+                      yacon$locality,
+                      family = "multinomial")
+plot(logit_model, xvar = "lambda", label = TRUE)
+```
+
+Wykresy pozwalają zobaczyć, jak zmieniają się współczynniki modelu w zależności od wartości parametru lambda, który kontroluje siłę regularyzacji.
+
+#### Szukanie najlepszych parametrów funkcji kary
+
+10-krotna kroswalidacja
+```{r}
+ # 10-krotna
+logistic_10 <- train(locality ~ wfr + fructose + sucrose + dry,
+                    data = yacon,
+                    method = "glmnet",
+                    trControl = trainControl(method = "cv"),
+                    tuneLength=7
+                    #tuneGrid=data.frame(alpha=c(0,0.5,1),lambda=c(1,0.1,0.01,0.001,0.0001,0.00001,0))
+                    )
+plot(logistic_10)
+print(logistic_10$bestTune)
+print(logistic_10$results[row.names(logistic_10$bestTune), "Accuracy"])
+```
+
+n-krotna kroswalidacja
+```{r, echo=TRUE}
+logistic_n <- train(locality ~ wfr + fructose + sucrose + dry,
+                    data = yacon,
+                    method = "glmnet",
+                    trControl = trainControl(method = "LOOCV"),
+                    tuneLength=7
+                    #tuneGrid=data.frame(alpha=c(0,0.5,1),lambda=c(1,0.1,0.01,0.001,0.0001,0.00001,0))
+                    )
+plot(logistic_n)
+print(logistic_n$bestTune)
+print(logistic_n$results[row.names(logistic_n$bestTune), "Accuracy"])
+```
+
+## c)
+
+### Model LDA i wartości współczynników
+
+```{r}
+lda_model <- lda(locality ~ wfr + fructose + sucrose + dry,
+                 data = yacon)
+coef(lda_model)
+```
+
+#### Wizualizacja współczynników LDA
+
+```{r}
+# Wyciągamy współczynniki dla modelu LDA
+lda_coefficients <- lda_model$scaling
+
+# lda_coefficients to macierz, przekształcamy ją do ramki danych
+lda_coefficients_df <- as.data.frame(lda_coefficients)
+variables <- rownames(lda_coefficients_df)
+lda_coefficients_df$Variable <- variables
+
+# Przekształcamy do formatu długiego
+lda_long <- pivot_longer(lda_coefficients_df,
+                         cols = -Variable,
+                         names_to = "Funkcja",
+                         values_to = "Współczynniki")
+
+# Wizualizacja
+ggplot(lda_long, aes(x = Variable, y = Współczynniki, fill = Funkcja)) +
+  geom_bar(stat = "identity",
+           position = "dodge") +
+  theme_minimal() +
+  labs(title = "Współczynniki funkcji dyskryminacyjnych modelu LDA",
+       x = "Zmienne",
+       y = "Wartość współczynnika") +
+  coord_flip()
+
+```
+
+#### Wizualizacja klasyfikacji
+Dla modelu LDA, możemy użyję pierwszych dwóch zmiennych kanonicznych do stworzenia wykresu klasyfikacji. 
+
+```{r}
+lda_pred <- predict(lda_model)$class
+yacon_plot <- yacon
+yacon_plot$predicted_class_lda <- lda_pred
+
+ggplot(yacon_plot, aes(x = wfr, y = fructose, color = predicted_class_lda)) + 
+  geom_point() + 
+  ggtitle("LDA Classification") +
+  xlab("WFR") + ylab("Fructose") +
+  theme_minimal() +
+  scale_color_manual(values = c("red", "blue", "green"))
+```
+
+
+### Model regresji logistycznej
+
+```{r}
+logit_model <- glmnet(as.matrix(yacon[, -1]),
+                      yacon$locality,
+                      lambda = 0.0006604871,
+                      alpha = 0.7,
+                      family = "multinomial")
+summary(logit_model)
+```
+
+#### Wartości współczynników 
+
+```{r}
+coef(logit_model)
+```
+
+
+#### Wizualizacja współczynników 
+
+```{r}
+# Dane współczynników z modelu
+CAJ <- coef(logit_model)$CAJ
+LIM <- coef(logit_model)$LIM
+OXA <- coef(logit_model)$OXA
+
+# Tworzenie ramki danych
+coef_data <- data.frame(
+  variable = c("Wyraz wolny", rownames(CAJ)[-1]),
+  CAJ = CAJ[, "s0"],
+  LIM = LIM[, "s0"],
+  OXA = OXA[, "s0"]
+)
+
+# Konwersja do formatu długiego
+library(tidyr)
+coef_data_long <- pivot_longer(coef_data, -variable, names_to = "Klasy", values_to = "Coefficient")
+
+# Wizualizacja
+library(ggplot2)
+ggplot(coef_data_long, aes(x = variable, y = Coefficient, fill = Klasy)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Współczynniki modelu regresji logistycznej",
+       x = "Zmienna", y = "Wartosć wsp.") +
+  theme_minimal()
+```
+
+Wysoka wartość wyrazu wolnego i niska wartość lambda wskazują na to, że wyraz wolny odgrywa kluczową rolę w modelu, a regularyzacja prowadzi do selekcji zmiennych i promuje rzadkie współczynniki, co może prowadzić do prostych granicznych decyzji modelu.
+
+#### Wizualizacja klasyfikacji
+Tutaj też użyję pierwszych dwóch zmiennych kanonicznych do stworzenia wykresu klasyfikacji. 
+```{r}
+# Przewidywanie klasy za pomocą modelu regresji logistycznej z karą
+predictions_logit <- predict(logit_model,
+                             newx = as.matrix(yacon[, -1]),
+                             type = "class")
+yacon_plot2 <- yacon
+yacon_plot2$predicted_class_logit <- predictions_logit
+
+# Tworzenie wykresu
+ggplot(yacon_plot2, aes(x = wfr, y = fructose, color = predicted_class_logit)) + 
+  geom_point() + 
+  ggtitle("Logistic Regression with Penalty Classification") +
+  xlab("WFR") + ylab("Fructose") +
+  theme_minimal() +
+  scale_color_manual(values = c("red", "blue", "green"))
+```
+
+### Porównanie modeli
+Przeprowadzę 10-krotną i n-krotną kroswalidację dla obu modeli, używając pakietu caret do oceny prawdopodobieństw błędnej klasyfikacji.
+
+```{r}
+# Utworzenie indeksów podziału na dane treningowe i testowe
+train_index <- createDataPartition(yacon$locality, p = 0.70, list = FALSE)
+
+# Podział danych na zbiory treningowy i testowy
+train_data <- yacon[train_index, ]
+test_data <- yacon[-train_index, ]
+
+# Modele LDA
+lda_10 <- train(locality ~ wfr + fructose + sucrose + dry,
+                        data = train_data, 
+                        method = "lda", 
+                        trControl = trainControl(method = "cv"),
+                        tuneLength = 7)
+lda_10_train_acc <- lda_10$results$Accuracy
+cat("Dokładność LDA (10-krotna) na danych treningowych: ", lda_10_train_acc, "\n")
+
+lda_n <- train(locality ~ wfr + fructose + sucrose + dry,
+                        data = train_data, 
+                        method = "lda", 
+                        trControl = trainControl(method = "LOOCV"),
+                        tuneLength = 7)
+lda_n_train_acc <- lda_n$results$Accuracy
+cat("Dokładność LDA (n-krotna) na danych treningowych: ", lda_n_train_acc, "\n")
+
+# Modele regresji logistycznej
+log_10 <- train(locality ~ wfr + fructose + sucrose + dry,
+                          data = train_data,
+                          method = "glmnet",
+                          trControl = trainControl(method = "cv"),
+                          tuneLength = 7)
+log_10_train_acc <- max(log_10$results$Accuracy)
+cat("Dokładność reg logistycznej (10-krotna) na danych treningowych: ", log_10_train_acc, "\n")
+
+log_n <- train(locality ~ wfr + fructose + sucrose + dry,
+                          data = train_data,
+                          method = "glmnet",
+                          trControl = trainControl(method = "LOOCV"),
+                          tuneLength = 7)
+log_n_train_acc <- max(log_n$results$Accuracy)
+cat("Dokładność reg logistycznej (n-krotna) na danych treningowych: ", log_n_train_acc, "\n")
+
+
+# Ocena modeli LDA na danych testowych
+lda_10_pred <- predict(lda_10, newdata = test_data[-1])
+lda_10_test_acc <- sum(lda_10_pred == test_data$locality)/nrow(test_data)
+
+lda_n_pred <- predict(lda_n, newdata = test_data[-1])
+lda_n_test_acc <- sum(lda_n_pred == test_data$locality)/nrow(test_data)
+
+# Ocena modeli reg log na danych testowych
+log_10_pred <- predict(log_10, newdata = test_data[-1])
+log_10_test_acc <- sum(log_10_pred == test_data$locality)/nrow(test_data)
+
+log_n_pred <- predict(log_n, newdata = test_data[-1])
+log_n_test_acc <- sum(log_n_pred == test_data$locality)/nrow(test_data)
+
+cat("LDA 10-krotna CV, dokładność na danych testowych: ", lda_10_test_acc, "\n")
+cat("LDA n-krotna CV, dokładność na danych testowych: ", lda_n_test_acc, "\n")
+cat("Regresja logistyczna 10-krotna CV, dokładność na danych testowych: ", log_10_test_acc, "\n")
+cat("Regresja logistyczna n-krotna CV, dokładność na danych testowych: ", log_n_test_acc, "\n")
+
+```
+
+Model regresji logistycznej z karą okazał się lepszy. Nie podałem parametru alpha,
+więc tuner użył obu LASSO i regresji grzbietowej tj. sieć elastyczną, co też mogło poprawić wynik.
+Z jakiegoś powodu nie ma różnicy dokładności klasyfikacji pomiędzy kroswalidacją n-krotną a 10-krotną, ale nie byłem wstanie doszukać się powdou.
